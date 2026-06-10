@@ -11,11 +11,12 @@ class Query(ObjectType):
         """ Create an instance of Product based on stock info for that product that is in Redis """
         redis_client = get_redis_conn()
         product_data = redis_client.hgetall(f"stock:{id}")
-        # TODO: ajoutez les colonnes name, sku, price
         if product_data:
             return Product(
                 id=id,
-                name=f"Product {id}",
+                name=product_data.get('name'),
+                sku=product_data.get('sku'),
+                price=float(product_data['price']) if 'price' in product_data else None,
                 quantity=int(product_data['quantity'])
             )
         return None

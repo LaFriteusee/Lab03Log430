@@ -5,6 +5,7 @@ Auteurs : Gabriel C. Ullmann, Fabio Petrillo, 2025
 """
 from sqlalchemy import text
 from stocks.models.stock import Stock
+from stocks.models.product import Product
 from db import get_redis_conn, get_sqlalchemy_session
 
 def set_stock_for_product(product_id, quantity):
@@ -73,24 +74,35 @@ def update_stock_redis(order_items, operation):
     stock_keys = list(r.scan_iter("stock:*"))
     if stock_keys:
         pipeline = r.pipeline()
-        for item in order_items:
-            if hasattr(item, 'product_id'):
-                product_id = item.product_id
-                quantity = item.quantity
-            else:
-                product_id = item['product_id']
-                quantity = item['quantity']
-            # TODO: ajoutez plus d'information sur l'article
-            current_stock = r.hget(f"stock:{product_id}", "quantity")
-            current_stock = int(current_stock) if current_stock else 0
-            
-            if operation == '+':
-                new_quantity = current_stock + quantity
-            else:  
-                new_quantity = current_stock - quantity
-            
-            pipeline.hset(f"stock:{product_id}", "quantity", new_quantity)
-        
+        session = get_sqlalchemy_session()
+        try:
+            for item in order_items:
+                if hasattr(item, 'product_id'):
+                    product_id = item.product_id
+                    quantity = item.quantity
+                else:
+                    product_id = item['product_id']
+                    quantity = item['quantity']
+
+                current_stock = r.hget(f"stock:{product_id}", "quantity")
+                current_stock = int(current_stock) if current_stock else 0
+
+                if operation == '+':
+                    new_quantity = current_stock + quantity
+                else:
+                    new_quantity = current_stock - quantity
+
+                product = session.query(Product).filter_by(id=product_id).first()
+                mapping = {"quantity": new_quantity}
+                if product:
+                    mapping["name"] = product.name
+                    mapping["sku"] = product.sku
+                    mapping["price"] = product.price
+
+                pipeline.hset(f"stock:{product_id}", mapping=mapping)
+        finally:
+            session.close()
+
         pipeline.execute()
     
     else:
