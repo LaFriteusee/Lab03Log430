@@ -284,3 +284,17 @@ ENDPOINT_URL = "http://store_manager:5000/stocks/graphql-query"
 ```
 
 Docker résout automatiquement `store_manager` vers l'adresse IP du conteneur correspondant grâce au `labo03-network`. Sans ce réseau partagé, les deux compositions seraient isolées et `supplier_app` ne pourrait pas contacter `store_manager`.
+
+---
+
+## Annexe 1 — GitHub Actions Runner
+
+![Runner 1](image/runner1.png)
+
+![Runner 2](image/runner2.png)
+
+---
+
+## Annexe 2 — Tests
+
+![Tests](image/test.png)
