@@ -28,7 +28,7 @@ def get_stocks(product_id):
     return get_stock(product_id)
 ```
 
-**`POST /products`, `POST /stocks`, `POST /orders`** — ni sûres, ni idempotentes. Chaque appel crée une nouvelle ressource ou modifie l'état. Par exemple, deux appels identiques à `POST /orders` créent deux commandes distinctes et déduisent le stock deux fois.
+**`POST /products`, `POST /stocks`, `POST /orders`** — pas sûres et pas idempotentes. Chaque appel crée une nouvelle ressource ou modifie l'état. Par exemple, deux appels identiques à `POST /orders` créent deux commandes distinctes et déduisent le stock deux fois.
 
 ```python
 # store_manager.py
@@ -49,7 +49,7 @@ def post_products():
 def delete_orders_id(order_id):
     return remove_order(order_id)  # idempotent : supprimer deux fois = même résultat
 ```
-
+Pour un apelle PUT, tout comme DELETE elle serais pas **safe**, mais **idempotente** , car deux fois la même requête ne fera la modification qu'une seul fois sur le stock.
 ---
 
 ## Question 2
@@ -58,9 +58,9 @@ Décrivez l'utilisation de la méthode `join` dans le cas de `get_stock_for_all_
 
 La méthode `join` de SQLAlchemy permet de combiner deux tables en une seule requête, évitant ainsi de faire plusieurs appels séparés à la base de données.
 
-**Pourquoi ne pas utiliser Simple Relationship Joins**
 
-La documentation SQLAlchemy décrit le *Simple Relationship Join* comme suit :
+
+on n'utilise pas *Simple relationship join*, car La documentation SQLAlchemy la décrit comme suit :
 
 ```python
 # Exemple de la doc — fonctionne quand une relationship() est déclarée
@@ -86,7 +86,6 @@ class Product(Base):
     price = Column(Float, nullable=False)
 ```
 
-**Utilisation de Joins to a Target with an ON Clause**
 
 Sans `relationship()`, on utilise le style *Joins to a Target with an ON Clause* en passant explicitement la condition de jointure. Cela correspond à l'équivalent SQL `JOIN ... ON` :
 
@@ -128,6 +127,8 @@ Chaque ligne du résultat contient ainsi les colonnes des deux tables, ce qui pe
 
 Quels résultats avez-vous obtenus en utilisant l'endpoint `POST /stocks/graphql-query` avec la requête suggérée ? Veuillez joindre la sortie de votre requête dans Postman afin d'illustrer votre réponse.
 
+En envoyant la requête suivante à `POST /stocks/graphql-query` :
+
 ```graphql
 {
   product(id: "1") {
@@ -137,11 +138,78 @@ Quels résultats avez-vous obtenus en utilisant l'endpoint `POST /stocks/graphql
 }
 ```
 
+On obtient la réponse JSON suivante :
+
+```json
+{
+    "data": {
+        "product": {
+            "id": 1,
+            "quantity": 50
+        }
+    },
+    "errors": null
+}
+```
+
+![Postman Q3](image/Postmanq3.png)
+
+L'endpoint retourne uniquement les champs `id` et `quantity`, car ce sont les seuls champs définis dans le schéma GraphQL pour l'instant. Les champs `name`, `sku` et `price` ne sont pas encore accessibles sur GraphQL puisqu'ils n'ont pas encore été ajoutés au type `ProductType` ni récupérés depuis Redis. La réponse est cohérente avec la structure du schéma GraphQL défini avant l'activité 5 :
+
+```python
+# src/stocks/schemas/product.py
+class Product(ObjectType):
+    id = Int()
+    quantity = Int()
+```
+
+Si un champ non défini (comme `name`) est demandé dans la requête, GraphQL retourne une erreur de validation avant même d'exécuter la requête, ce qui illustre l'un des avantages de GraphQL.
+
 ---
 
 ## Question 4
 
 Quelles lignes avez-vous changé dans `update_stock_redis` (fichier `src/stocks/commands/write_stock.py`) ? Veuillez joindre du code afin d'illustrer votre réponse.
+
+Trois modifications ont été apportées :
+
+**1. Import du modèle `Product`** en haut du fichier :
+
+```python
+from stocks.models.product import Product
+```
+
+**2. Ouverture d'une session SQLAlchemy** dans la boucle pour pouvoir interroger la BD :
+
+```python
+session = get_sqlalchemy_session()
+try:
+    for item in order_items:
+        ...
+finally:
+    session.close()
+```
+
+**3. Récupération des informations du produit et stockage dans Redis via un `mapping`** au lieu d'une seule valeur :
+
+Avant :
+```python
+pipeline.hset(f"stock:{product_id}", "quantity", new_quantity)
+```
+
+Après :
+```python
+product = session.query(Product).filter_by(id=product_id).first()
+mapping = {"quantity": new_quantity}
+if product:
+    mapping["name"] = product.name
+    mapping["sku"] = product.sku
+    mapping["price"] = product.price
+
+pipeline.hset(f"stock:{product_id}", mapping=mapping)
+```
+
+Avant ces changements, Redis ne stockait que la `quantity` pour chaque clé `stock:{id}`. Après, il stocke aussi `name`, `sku` et `price`, ce qui permet au resolver GraphQL de retourner ces informations sans avoir à refaire de requête SQL à chaque fois.
 
 ---
 
@@ -149,8 +217,70 @@ Quelles lignes avez-vous changé dans `update_stock_redis` (fichier `src/stocks/
 
 Quels résultats avez-vous obtenus en utilisant l'endpoint `POST /stocks/graphql-query` avec les améliorations de l'activité 5 ? Veuillez joindre la sortie de votre requête dans Postman afin d'illustrer votre réponse.
 
+Après avoir créé une commande de 2 unités du produit 1 (ce qui déclenche `update_stock_redis`), la requête suivante :
+
+```graphql
+{
+  product(id: "1") {
+    id
+    name
+    sku
+    price
+    quantity
+  }
+}
+```
+
+retourne :
+
+```json
+{
+    "data": {
+        "product": {
+            "id": 1,
+            "name": "Laptop ABC",
+            "price": 1999.99,
+            "quantity": 48,
+            "sku": "LP12567"
+        }
+    },
+    "errors": null
+}
+```
+
+![Postman Q5](image/Postmanq5.png)
+
+Contrairement à la Question 3, les champs `name`, `sku` et `price` sont maintenant retournés. Ces informations sont stockées dans Redis par `update_stock_redis` lors de chaque opération sur les commandes, évitant ainsi une requête SQL supplémentaire au moment de la lecture GraphQL. La quantité est passée de 50 à 48 suite à l'achat de 2 unités.
+
 ---
 
 ## Question 6
 
 Examinez attentivement le fichier `docker-compose.yml` du répertoire `scripts`, ainsi que celui situé à la racine du projet. Qu'ont-ils en commun ? Par quel mécanisme ces conteneurs peuvent-ils communiquer entre eux ? Veuillez joindre du code YML afin d'illustrer votre réponse.
+
+Les deux fichiers déclarent le même réseau `labo03-network` avec `external: true` :
+
+```yaml
+# docker-compose.yml (racine)
+networks:
+  labo03-network:
+    driver: bridge
+    external: true
+
+# scripts/docker-compose.yml
+networks:
+  labo03-network:
+    driver: bridge
+    external: true
+```
+
+Le mot-clé `external: true` indique que le réseau n'est pas créé par Docker Compose, mais qu'il existe déjà sur la machine (créé manuellement avec `docker network create labo03-network`). Les deux compositions se branchent sur ce réseau partagé, ce qui permet à leurs conteneurs de se voir mutuellement.
+
+C'est par ce mécanisme que `supplier_app` (défini dans `scripts/docker-compose.yml`) peut joindre `store_manager` (défini dans `docker-compose.yml` à la racine) en utilisant simplement son nom de service comme hostname :
+
+```yaml
+# scripts/supplier_app.py
+ENDPOINT_URL = "http://store_manager:5000/stocks/graphql-query"
+```
+
+Docker résout automatiquement `store_manager` vers l'adresse IP du conteneur correspondant grâce au `labo03-network`. Sans ce réseau partagé, les deux compositions seraient isolées et `supplier_app` ne pourrait pas contacter `store_manager`.
